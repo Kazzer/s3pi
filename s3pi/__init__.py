@@ -2,6 +2,7 @@
 """Package Index manager for S3 hosted package indexes"""
 import argparse
 import configparser
+import html.parser
 import logging
 import os
 import shutil
@@ -13,6 +14,28 @@ import boto.s3.key
 logging.basicConfig(
     format='%(levelname)s [%(module)s:%(lineno)s] %(message)s',
 )
+
+
+class IndexParser(html.parser.HTMLParser):
+    """Extension on HTML Parser to make directories from a element links"""
+
+    def __init__(self, directory):
+        """Configures temporary directory for creating links"""
+        self.directory = directory
+        super().__init__()
+
+    def handle_starttag(self, tag, attrs):
+        """Create a directory for each a element"""
+        if tag == 'a':
+            for attr in attrs:
+                if attr[0] == 'href':
+                    os.makedirs(
+                        os.path.join(
+                            self.directory,
+                            attr[1],
+                        ),
+                        exist_ok=True,
+                    )
 
 
 def create_index(directory, filename='', root=False):
@@ -62,7 +85,7 @@ def ensure_ends_with_slash(string):
 
 
 def load_settings(config_path):
-    """Loads settings and returns an ConfigParser object"""
+    """Loads settings and returns a configparser.SectionProxy object"""
     settings = configparser.ConfigParser(
         defaults={
             's3.bucket': '',
@@ -89,12 +112,20 @@ def load_settings(config_path):
     return settings
 
 
+def recreate_root_folders(directory):
+    """Creates empty folders based on those that exist in index.html"""
+    with open(os.path.join(directory, 'index.html'), 'r') as index_file:
+        parser = IndexParser(directory)
+        parser.feed(index_file.read())
+
+
 def add_new_files_to_index(
+        new_index_files,
         package_directory,
         temp_directory,
         log=logging.getLogger(__name__),
 ):
-    """Adds the specified new files to the cloned package index"""
+    """Adds the specified new files to the partial package index"""
     modified_files = set()
     for filename in os.listdir(package_directory):
         source_file = os.path.join(
@@ -108,7 +139,7 @@ def add_new_files_to_index(
             temp_directory,
             filename.split('-')[0].lower(),
         )
-        if not os.path.isdir(simple_package_directory):
+        if '*' in new_index_files or 'index.html' in new_index_files:
             log.debug(
                 'Creating package directory "%s"',
                 simple_package_directory,
@@ -121,15 +152,17 @@ def add_new_files_to_index(
             source_file,
             simple_package_directory,
         )
-        source_file_existed = os.path.exists(os.path.join(
-            simple_package_directory,
-            filename,
-        ))
         modified_files.add(shutil.copy2(
             source_file,
             simple_package_directory,
         ))
-        if not source_file_existed:
+        if (
+                '*' in new_index_files
+                or (
+                    '{}/index.html'.format(simple_package_directory)
+                    in new_index_files
+                )
+        ):
             modified_files.add(create_index(
                 simple_package_directory,
                 filename=filename,
@@ -139,12 +172,14 @@ def add_new_files_to_index(
 
 
 def download_from_s3(
+        package_directory,
         directory,
         settings,
         region='us-east-1',
         log=logging.getLogger(__name__),
 ):
     """Clones the S3 Package Index into the provided directory"""
+    new_index_files = set()
     s3_conn = None
     try:
         s3_conn = boto.s3.connect_to_region(region)
@@ -157,13 +192,64 @@ def download_from_s3(
 
         s3_bucket = s3_conn.get_bucket(settings.get('s3.bucket'))
 
+        if not s3_bucket.get_key('/'.join((
+                s3_prefix,
+                'index.html',
+        ))):
+            log.debug(
+                'Package index "%s" in "%s" is not initialised',
+                s3_prefix,
+                s3_bucket.name,
+            )
+            new_index_files.add('*')
+            return new_index_files
+
+        download_files = set()
+        for postfix in os.listdir(package_directory):
+            simple_package_directory = postfix.split('-')[0].lower()
+            if not s3_bucket.get_key('/'.join((
+                    s3_prefix,
+                    simple_package_directory,
+                    'index.html',
+            ))):
+                log.debug(
+                    'Package "%s" does not exist in package index',
+                    simple_package_directory,
+                )
+                new_index_files.add('index.html')
+                new_index_files.add(
+                    '{}/index.html'.format(simple_package_directory),
+                )
+                download_files.add('index.html')
+            elif not s3_bucket.get_key('/'.join((
+                    s3_prefix,
+                    simple_package_directory,
+                    postfix,
+            ))):
+                new_index_files.add(
+                    '{}/index.html'.format(simple_package_directory),
+                )
+                download_files.add(
+                    '{}/index.html'.format(simple_package_directory),
+                )
+
+        if not download_files:
+            return new_index_files
+
         log.info(
-            'Cloning package index from "%s" in "%s" to "%s"',
+            'Downloading files from "%s" in "%s" to "%s"',
             s3_prefix,
             s3_bucket.name,
             directory,
         )
-        for key in s3_bucket.list(prefix=s3_prefix):
+        for postfix in download_files:
+            key = boto.s3.key.Key(
+                bucket=s3_bucket,
+                name='/'.join((
+                    s3_prefix,
+                    postfix,
+                )),
+            )
             local_file = os.path.join(
                 directory,
                 key.name[len(s3_prefix):],
@@ -181,6 +267,13 @@ def download_from_s3(
             key.get_contents_to_filename(
                 local_file,
             )
+
+        if 'index.html' in download_files:
+            recreate_root_folders(
+                directory,
+            )
+
+        return new_index_files
     finally:
         if s3_conn:
             s3_conn.close()
@@ -209,10 +302,10 @@ def upload_to_s3(
         for modified_file in modified_files:
             key = boto.s3.key.Key(
                 bucket=s3_bucket,
-                name=os.path.join(
+                name='/'.join((
                     s3_prefix,
                     modified_file[len(directory)+1:],
-                ),
+                )),
             )
             log.info(
                 'Uploading "%s" to "%s" in "%s"',
@@ -271,9 +364,11 @@ def main():
 
     temporary_directory = tempfile.TemporaryDirectory()
     modified_files = set()
+    new_index_files = set()
 
     if args.upload or settings.getboolean('upload'):
-        download_from_s3(
+        new_index_files = download_from_s3(
+            args.package_directory,
             temporary_directory.name,
             settings,
             region=args.region,
@@ -281,6 +376,7 @@ def main():
         )
 
     modified_files.update(add_new_files_to_index(
+        new_index_files,
         args.package_directory,
         temporary_directory.name,
         log=log,
