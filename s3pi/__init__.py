@@ -13,6 +13,8 @@ import boto.s3.key
 
 logging.basicConfig(
     format='%(levelname)s [%(module)s:%(lineno)s] %(message)s',
+    # Default to CRITICAL level so boto doesn't log messages
+    level=logging.CRITICAL,
 )
 
 
@@ -135,16 +137,19 @@ def add_new_files_to_index(
         if not os.path.isfile(source_file):
             continue
 
-        simple_package_directory = os.path.join(
-            temp_directory,
-            filename.split('-')[0].lower(),
+        simple_package_directory = filename.split('-')[0].lower()
+        os.makedirs(
+            os.path.join(
+                temp_directory,
+                simple_package_directory,
+            ),
+            exist_ok=True,
         )
         if '*' in new_index_files or 'index.html' in new_index_files:
             log.debug(
                 'Creating package directory "%s"',
                 simple_package_directory,
             )
-            os.makedirs(simple_package_directory)
             modified_files.add(create_index(temp_directory, root=True))
 
         log.info(
@@ -154,7 +159,10 @@ def add_new_files_to_index(
         )
         modified_files.add(shutil.copy2(
             source_file,
-            simple_package_directory,
+            os.path.join(
+                temp_directory,
+                simple_package_directory,
+            ),
         ))
         if (
                 '*' in new_index_files
@@ -164,7 +172,10 @@ def add_new_files_to_index(
                 )
         ):
             modified_files.add(create_index(
-                simple_package_directory,
+                os.path.join(
+                    temp_directory,
+                    simple_package_directory,
+                ),
                 filename=filename,
             ))
     modified_files.discard(None)
@@ -245,10 +256,7 @@ def download_from_s3(
         for postfix in download_files:
             key = boto.s3.key.Key(
                 bucket=s3_bucket,
-                name='/'.join((
-                    s3_prefix,
-                    postfix,
-                )),
+                name=(s3_prefix + postfix),
             )
             local_file = os.path.join(
                 directory,
