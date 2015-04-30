@@ -310,10 +310,7 @@ def upload_to_s3(
         for modified_file in modified_files:
             key = boto.s3.key.Key(
                 bucket=s3_bucket,
-                name='/'.join((
-                    s3_prefix,
-                    modified_file[len(directory)+1:],
-                )),
+                name=(s3_prefix + modified_file[len(directory)+1:]),
             )
             log.info(
                 'Uploading "%s" to "%s" in "%s"',
