@@ -5,6 +5,7 @@ import configparser
 import html.parser
 import logging
 import os
+import setuptools.package_index
 import shutil
 import tempfile
 
@@ -138,10 +139,20 @@ def add_new_files_to_index(
             continue
 
         simple_package_directory = filename.split('-')[0].lower()
+        safe_simple_package_directory = (
+            setuptools.package_index.safe_name(simple_package_directory)
+        )
         os.makedirs(
             os.path.join(
                 temp_directory,
                 simple_package_directory,
+            ),
+            exist_ok=True,
+        )
+        os.makedirs(
+            os.path.join(
+                temp_directory,
+                safe_simple_package_directory,
             ),
             exist_ok=True,
         )
@@ -178,6 +189,33 @@ def add_new_files_to_index(
                 ),
                 filename=filename,
             ))
+        if simple_package_directory != safe_simple_package_directory:
+            log.info(
+                'Copying "%s" to "%s"',
+                source_file,
+                safe_simple_package_directory,
+            )
+            modified_files.add(shutil.copy2(
+                source_file,
+                os.path.join(
+                    temp_directory,
+                    safe_simple_package_directory,
+                ),
+            ))
+            if (
+                    '*' in new_index_files
+                    or (
+                        '{}/index.html'.format(safe_simple_package_directory)
+                        in new_index_files
+                    )
+            ):
+                modified_files.add(create_index(
+                    os.path.join(
+                        temp_directory,
+                        safe_simple_package_directory,
+                    ),
+                    filename=filename,
+                ))
     modified_files.discard(None)
     return modified_files
 
@@ -218,6 +256,9 @@ def download_from_s3(
         download_files = set()
         for postfix in os.listdir(package_directory):
             simple_package_directory = postfix.split('-')[0].lower()
+            safe_simple_package_directory = (
+                setuptools.package_index.safe_name(simple_package_directory)
+            )
             if not s3_bucket.get_key('/'.join((
                     s3_prefix,
                     simple_package_directory,
@@ -243,6 +284,32 @@ def download_from_s3(
                 download_files.add(
                     '{}/index.html'.format(simple_package_directory),
                 )
+            if simple_package_directory != safe_simple_package_directory:
+                if not s3_bucket.get_key('/'.join((
+                        s3_prefix,
+                        simple_package_directory,
+                        'index.html',
+                ))):
+                    log.debug(
+                        'Package "%s" does not exist in package index',
+                        simple_package_directory,
+                    )
+                    new_index_files.add('index.html')
+                    new_index_files.add(
+                        '{}/index.html'.format(simple_package_directory),
+                    )
+                    download_files.add('index.html')
+                elif not s3_bucket.get_key('/'.join((
+                        s3_prefix,
+                        simple_package_directory,
+                        postfix,
+                ))):
+                    new_index_files.add(
+                        '{}/index.html'.format(simple_package_directory),
+                    )
+                    download_files.add(
+                        '{}/index.html'.format(simple_package_directory),
+                    )
 
         if not download_files:
             return new_index_files
