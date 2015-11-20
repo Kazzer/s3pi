@@ -205,7 +205,7 @@ def add_new_files_to_index(
             if (
                     '*' in new_index_files
                     or (
-                        '{}/index.html'.format(safe_simple_package_directory)
+                        '{}/index.html'.format(simple_package_directory)
                         in new_index_files
                     )
             ):
